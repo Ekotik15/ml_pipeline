@@ -1,0 +1,10 @@
+pandas
+requests
+beautifulsoup4
+kaggle
+datasets
+python-dotenv
+matplotlib
+seaborn
+nltk
+jupyter
