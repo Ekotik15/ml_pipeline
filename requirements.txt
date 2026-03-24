@@ -1,10 +1,6 @@
 pandas
-requests
-beautifulsoup4
-kaggle
-datasets
-python-dotenv
+numpy
 matplotlib
 seaborn
-nltk
+scipy
 jupyter
