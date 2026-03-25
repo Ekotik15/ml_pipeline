@@ -1,6 +1,3 @@
-#!/usr/bin/env python
-# run_pipeline.py
-
 import os
 import sys
 import pandas as pd
@@ -11,7 +8,6 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, f1_score
 
-# Добавляем путь к папке agents
 sys.path.append(os.path.join(os.path.dirname(__file__), 'agents'))
 
 from data_collection_agent import DataCollectionAgent
@@ -19,7 +15,6 @@ from data_quality_agent import DataQualityAgent
 from annotation_agent import AnnotationAgent
 from al_agent import ActiveLearningAgent
 
-# Константы
 CONFIDENCE_THRESHOLD = 0.7
 AL_INIT_SIZE = 50
 AL_BATCH_SIZE = 20
@@ -27,32 +22,26 @@ AL_ITERATIONS = 5
 TEST_SIZE = 0.2
 RANDOM_STATE = 42
 
-# ---------- Шаг 1: Сбор данных ----------
-def collect_data() -> pd.DataFrame:
+def collect_data():
     print("=== Шаг 1: Сбор данных ===")
     agent = DataCollectionAgent()
     sources = [{"type": "hf_dataset", "name": "imdb"}]
     df = agent.run(sources)
+    df = df.head(500)
     print(f"Собрано {len(df)} записей")
     df.to_parquet("data/raw/raw_data.parquet", index=False)
     return df
 
-# ---------- Шаг 2: Чистка данных ----------
-def clean_data(df: pd.DataFrame) -> pd.DataFrame:
+def clean_data(df):
     print("=== Шаг 2: Чистка данных ===")
     agent = DataQualityAgent()
-    strategy = {
-        'missing': 'median',
-        'duplicates': 'drop',
-        'outliers': 'clip_iqr'
-    }
+    strategy = {'missing': 'median', 'duplicates': 'drop', 'outliers': 'clip_iqr'}
     df_clean = agent.fix(df, strategy)
     print(f"После чистки осталось {len(df_clean)} записей")
     df_clean.to_parquet("data/raw/clean_data.parquet", index=False)
     return df_clean
 
-# ---------- Шаг 3: Автоматическая разметка ----------
-def auto_label(df: pd.DataFrame) -> pd.DataFrame:
+def auto_label(df):
     print("=== Шаг 3: Автоматическая разметка ===")
     agent = AnnotationAgent(modality='text')
     candidate_labels = ['positive', 'negative']
@@ -61,8 +50,7 @@ def auto_label(df: pd.DataFrame) -> pd.DataFrame:
     df_labeled.to_parquet("data/raw/auto_labeled.parquet", index=False)
     return df_labeled
 
-# ---------- Human-in-the-loop ----------
-def human_review(df: pd.DataFrame) -> pd.DataFrame:
+def human_review(df):
     print("=== Human-in-the-loop: проверка неопределённых примеров ===")
     low_conf = df[df['confidence'] < CONFIDENCE_THRESHOLD].copy()
     if low_conf.empty:
@@ -84,15 +72,29 @@ def human_review(df: pd.DataFrame) -> pd.DataFrame:
     df_final.to_parquet("data/raw/reviewed.parquet", index=False)
     return df_final
 
-# ---------- Шаг 4: Активное обучение ----------
-def active_learning(df: pd.DataFrame) -> pd.DataFrame:
+def active_learning(df):
     print("=== Шаг 4: Активное обучение ===")
     agent = ActiveLearningAgent()
 
-    labeled_init = df.head(AL_INIT_SIZE).copy()
-    pool = df.iloc[AL_INIT_SIZE:].copy()
+    # Стратифицированная выборка начальных данных (50 примеров)
+    n_init = min(AL_INIT_SIZE, len(df))
+    labeled_init, _ = train_test_split(
+        df, train_size=n_init, random_state=RANDOM_STATE,
+        stratify=df['auto_label']
+    )
+    # Убедимся, что в начальной выборке есть оба класса
+    unique_labels = labeled_init['auto_label'].unique()
+    if len(unique_labels) < 2:
+        other_class = 'positive' if unique_labels[0] == 'negative' else 'negative'
+        extra = df[df['auto_label'] == other_class].head(20)
+        labeled_init = pd.concat([labeled_init, extra], ignore_index=True)
+        print("Добавлены примеры другого класса в начальную выборку.")
+
+    pool = df.drop(labeled_init.index).reset_index(drop=True)
+    labeled_init = labeled_init.reset_index(drop=True)
+
     test = pool.sample(frac=TEST_SIZE, random_state=RANDOM_STATE)
-    pool = pool.drop(test.index)
+    pool = pool.drop(test.index).reset_index(drop=True)
 
     current_labeled = labeled_init.copy()
     current_pool = pool.copy()
@@ -121,20 +123,16 @@ def active_learning(df: pd.DataFrame) -> pd.DataFrame:
     print(f"Активное обучение завершено. Всего размечено: {len(current_labeled)} примеров")
     return current_labeled
 
-# ---------- Шаг 5: Обучение модели ----------
-def train_model(df: pd.DataFrame) -> dict:
+def train_model(df):
     print("=== Шаг 5: Обучение модели ===")
     label_map = {'positive': 1, 'negative': 0}
     df['label_int'] = df['auto_label'].map(label_map)
-
     vectorizer = TfidfVectorizer(max_features=5000, stop_words='english')
     X = vectorizer.fit_transform(df['content'].astype(str))
     y = df['label_int']
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=TEST_SIZE, random_state=RANDOM_STATE, stratify=y
-    )
-
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=TEST_SIZE,
+                                                        random_state=RANDOM_STATE, stratify=y)
     model = LogisticRegression(max_iter=1000, class_weight='balanced')
     model.fit(X_train, y_train)
 
@@ -146,19 +144,16 @@ def train_model(df: pd.DataFrame) -> dict:
     joblib.dump(model, 'models/final_model.pkl')
     joblib.dump(vectorizer, 'models/vectorizer.pkl')
     print(f"Модель сохранена. Accuracy: {acc:.4f}, F1: {f1:.4f}")
-    return {'accuracy': acc, 'f1': f1, 'model': model, 'vectorizer': vectorizer}
+    return {'accuracy': acc, 'f1': f1}
 
-# ---------- Шаг 6: Генерация отчёта ----------
-def generate_report(metrics: dict, al_history_path: str = "reports/al_history.csv"):
+def generate_report(metrics):
     print("=== Шаг 6: Генерация отчёта ===")
-    al_history = pd.read_csv(al_history_path) if os.path.exists(al_history_path) else None
-
     report = f"""# Итоговый отчёт
 
 ## 1. Описание задачи и датасета
 - Модальность: текст
 - Источник: IMDB (рецензии на фильмы)
-- Объём: 25 000 записей
+- Объём: 25 000 записей (для демонстрации использовано 500)
 - Классы: positive / negative
 
 ## 2. Действия агентов
@@ -174,13 +169,8 @@ def generate_report(metrics: dict, al_history_path: str = "reports/al_history.cs
 ## 4. Метрики качества
 - Accuracy на тесте: {metrics['accuracy']:.4f}
 - F1-score: {metrics['f1']:.4f}
-"""
-    if al_history is not None:
-        report += f"\n## 5. История активного обучения\n"
-        report += al_history.to_markdown(index=False) + "\n"
 
-    report += """
-## 6. Ретроспектива
+## 5. Ретроспектива
 - Zero-shot разметка дала высокую точность, но требовала доработки.
 - Активное обучение позволило сократить количество размечаемых примеров.
 - Human-in-the-loop критически важен для качества.
@@ -190,7 +180,6 @@ def generate_report(metrics: dict, al_history_path: str = "reports/al_history.cs
         f.write(report)
     print("Отчёт сохранён в reports/final_report.md")
 
-# ---------- Основной пайплайн ----------
 def main():
     os.makedirs('data/raw', exist_ok=True)
     os.makedirs('data/labeled', exist_ok=True)
