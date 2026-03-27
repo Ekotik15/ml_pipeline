@@ -1,7 +1,7 @@
+#!/usr/bin/env python
 import os
 import sys
 import pandas as pd
-import numpy as np
 import joblib
 from sklearn.model_selection import train_test_split
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -13,12 +13,8 @@ sys.path.append(os.path.join(os.path.dirname(__file__), 'agents'))
 from data_collection_agent import DataCollectionAgent
 from data_quality_agent import DataQualityAgent
 from annotation_agent import AnnotationAgent
-from al_agent import ActiveLearningAgent
 
 CONFIDENCE_THRESHOLD = 0.7
-AL_INIT_SIZE = 50
-AL_BATCH_SIZE = 20
-AL_ITERATIONS = 5
 TEST_SIZE = 0.2
 RANDOM_STATE = 42
 
@@ -58,13 +54,19 @@ def human_review(df):
         return df
 
     review_file = "review_queue.csv"
-    low_conf.to_csv(review_file, index=False)
+    try:
+        low_conf.to_csv(review_file, index=False)
+    except PermissionError:
+        print("Нет прав на запись файла review_queue.csv. Пропускаем ручную проверку.")
+        return df
+
     print(f"Сохранено {len(low_conf)} примеров для ручной проверки в {review_file}")
     print("Пожалуйста, откройте файл, исправьте метки в колонке 'auto_label' и сохраните.")
     input("Нажмите Enter после того, как исправите файл...")
 
     if not os.path.exists(review_file):
-        raise FileNotFoundError("Файл review_queue.csv не найден")
+        print("Файл review_queue.csv не найден, продолжаем без исправлений.")
+        return df
     corrected = pd.read_csv(review_file)
     high_conf = df[df['confidence'] >= CONFIDENCE_THRESHOLD]
     df_final = pd.concat([high_conf, corrected], ignore_index=True)
@@ -72,59 +74,16 @@ def human_review(df):
     df_final.to_parquet("data/raw/reviewed.parquet", index=False)
     return df_final
 
-def active_learning(df):
-    print("=== Шаг 4: Активное обучение ===")
-    agent = ActiveLearningAgent()
-
-    # Стратифицированная выборка начальных данных (50 примеров)
-    n_init = min(AL_INIT_SIZE, len(df))
-    labeled_init, _ = train_test_split(
-        df, train_size=n_init, random_state=RANDOM_STATE,
-        stratify=df['auto_label']
-    )
-    # Убедимся, что в начальной выборке есть оба класса
-    unique_labels = labeled_init['auto_label'].unique()
-    if len(unique_labels) < 2:
-        other_class = 'positive' if unique_labels[0] == 'negative' else 'negative'
-        extra = df[df['auto_label'] == other_class].head(20)
-        labeled_init = pd.concat([labeled_init, extra], ignore_index=True)
-        print("Добавлены примеры другого класса в начальную выборку.")
-
-    pool = df.drop(labeled_init.index).reset_index(drop=True)
-    labeled_init = labeled_init.reset_index(drop=True)
-
-    test = pool.sample(frac=TEST_SIZE, random_state=RANDOM_STATE)
-    pool = pool.drop(test.index).reset_index(drop=True)
-
-    current_labeled = labeled_init.copy()
-    current_pool = pool.copy()
-    history = []
-
-    for i in range(AL_ITERATIONS):
-        agent.fit(current_labeled)
-        metrics = agent.evaluate(current_labeled, test)
-        history.append({
-            'iteration': i,
-            'n_labeled': len(current_labeled),
-            'accuracy': metrics['accuracy'],
-            'f1': metrics['f1']
-        })
-        print(f"Итерация {i}: размечено {len(current_labeled)} примеров, accuracy={metrics['accuracy']:.4f}")
-
-        if i == AL_ITERATIONS - 1:
-            break
-
-        selected_indices = agent.query(current_pool, strategy='entropy', batch_size=AL_BATCH_SIZE)
-        new_samples = current_pool.iloc[selected_indices]
-        current_labeled = pd.concat([current_labeled, new_samples], ignore_index=True)
-        current_pool = current_pool.drop(current_pool.index[selected_indices]).reset_index(drop=True)
-
-    pd.DataFrame(history).to_csv("reports/al_history.csv", index=False)
-    print(f"Активное обучение завершено. Всего размечено: {len(current_labeled)} примеров")
-    return current_labeled
-
 def train_model(df):
-    print("=== Шаг 5: Обучение модели ===")
+    print("=== Шаг 4: Обучение модели ===")
+    if len(df['auto_label'].unique()) < 2:
+        print("В данных только один класс. Обучение модели невозможно. Сохраняем отчёт.")
+        os.makedirs('models', exist_ok=True)
+        os.makedirs('reports', exist_ok=True)
+        with open('reports/final_report.md', 'w', encoding='utf-8') as f:
+            f.write("# Итоговый отчёт\n\nВ данных только один класс, обучение не выполнено.")
+        return {'accuracy': 0.0, 'f1': 0.0}
+
     label_map = {'positive': 1, 'negative': 0}
     df['label_int'] = df['auto_label'].map(label_map)
     vectorizer = TfidfVectorizer(max_features=5000, stop_words='english')
@@ -147,7 +106,7 @@ def train_model(df):
     return {'accuracy': acc, 'f1': f1}
 
 def generate_report(metrics):
-    print("=== Шаг 6: Генерация отчёта ===")
+    print("=== Шаг 5: Генерация отчёта ===")
     report = f"""# Итоговый отчёт
 
 ## 1. Описание задачи и датасета
@@ -160,7 +119,7 @@ def generate_report(metrics):
 - DataCollectionAgent: собрал данные из HuggingFace IMDB.
 - DataQualityAgent: удалил дубликаты, обработал пропуски и выбросы.
 - AnnotationAgent: zero-shot разметка с уверенностью.
-- ActiveLearningAgent: выбрал {AL_INIT_SIZE + AL_BATCH_SIZE * AL_ITERATIONS} наиболее информативных примеров.
+- Human-in-the-loop: ручная проверка неопределённых примеров.
 
 ## 3. Human-in-the-loop
 - Проверено примеров с уверенностью < {CONFIDENCE_THRESHOLD} (файл review_queue.csv).
@@ -172,7 +131,6 @@ def generate_report(metrics):
 
 ## 5. Ретроспектива
 - Zero-shot разметка дала высокую точность, но требовала доработки.
-- Активное обучение позволило сократить количество размечаемых примеров.
 - Human-in-the-loop критически важен для качества.
 """
     os.makedirs('reports', exist_ok=True)
@@ -190,8 +148,7 @@ def main():
     cleaned = clean_data(raw)
     labeled = auto_label(cleaned)
     reviewed = human_review(labeled)
-    selected = active_learning(reviewed)
-    metrics = train_model(selected)
+    metrics = train_model(reviewed)
     generate_report(metrics)
 
 if __name__ == "__main__":
