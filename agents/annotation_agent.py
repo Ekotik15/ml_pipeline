@@ -6,35 +6,18 @@ from typing import List, Dict, Optional, Union
 from sklearn.metrics import cohen_kappa_score, accuracy_score
 from transformers import pipeline
 from datetime import datetime
+import torch
 
 class AnnotationAgent:
-    """
-    Агент для автоматической разметки текстовых данных.
-    """
     def __init__(self, modality: str = 'text', model_name: str = 'typeform/distilbert-base-uncased-mnli'):
-        """
-        Инициализация агента.
-        modality: 'text' (пока только текст)
-        model_name: имя модели для zero-shot классификации
-        """
         if modality != 'text':
             raise NotImplementedError("Пока поддерживается только текстовая модальность.")
         self.modality = modality
-        import torch
-device = 0 if torch.cuda.is_available() else -1
-self.classifier = pipeline("zero-shot-classification", model=model_name, device=device)
+        device = 0 if torch.cuda.is_available() else -1
+        self.classifier = pipeline("zero-shot-classification", model=model_name, device=device)
         self.spec = None
 
     def auto_label(self, df: pd.DataFrame, candidate_labels: List[str], hypothesis_template: str = "This example is {}.") -> pd.DataFrame:
-        """
-        Автоматическая разметка текстов.
-        df: должен содержать колонку 'content' с текстом.
-        candidate_labels: список возможных меток (например, ['positive', 'negative']).
-        hypothesis_template: шаблон для zero-shot (подставляется метка).
-        Возвращает df с добавленными колонками:
-          - 'auto_label': предсказанная метка
-          - 'confidence': уверенность (вероятность для предсказанной метки)
-        """
         if 'content' not in df.columns:
             raise ValueError("DataFrame должен содержать колонку 'content'")
         texts = df['content'].astype(str).tolist()
@@ -47,13 +30,6 @@ self.classifier = pipeline("zero-shot-classification", model=model_name, device=
         return df_result
 
     def generate_spec(self, df: pd.DataFrame, task: str, classes: Dict[str, str], examples: Dict[str, List[str]]) -> str:
-        """
-        Генерирует спецификацию разметки в формате Markdown.
-        task: описание задачи (например, "Классификация отзывов на фильмы")
-        classes: словарь {метка: определение}
-        examples: словарь {метка: [примеры текстов]}
-        Возвращает путь к сохранённому файлу.
-        """
         spec_lines = []
         spec_lines.append(f"# Спецификация разметки\n\n## Задача\n{task}\n")
         spec_lines.append("## Классы\n")
@@ -80,15 +56,6 @@ self.classifier = pipeline("zero-shot-classification", model=model_name, device=
         return filename
 
     def check_quality(self, df_labeled: pd.DataFrame, true_label_col: str = 'label', pred_label_col: str = 'auto_label', confidence_col: str = 'confidence') -> Dict:
-        """
-        Оценивает качество разметки.
-        df_labeled: DataFrame с колонками true_label_col, pred_label_col, confidence_col.
-        Возвращает словарь с метриками:
-          - kappa: коэффициент Коэна (если метки бинарные/мультикласс)
-          - accuracy: доля правильных ответов (если есть true метки)
-          - label_distribution: распределение предсказанных меток
-          - confidence_mean: средняя уверенность
-        """
         label_dist = df_labeled[pred_label_col].value_counts().to_dict()
         conf_mean = df_labeled[confidence_col].mean() if confidence_col in df_labeled else None
 
@@ -110,11 +77,6 @@ self.classifier = pipeline("zero-shot-classification", model=model_name, device=
         }
 
     def export_to_labelstudio(self, df_labeled: pd.DataFrame, text_col: str = 'content', label_col: str = 'auto_label', confidence_col: str = 'confidence') -> str:
-        """
-        Экспортирует данные в формате LabelStudio JSON.
-        Формат соответствует импорту в LabelStudio (tasks).
-        Возвращает путь к сохранённому файлу.
-        """
         tasks = []
         for idx, row in df_labeled.iterrows():
             task = {
@@ -140,11 +102,7 @@ self.classifier = pipeline("zero-shot-classification", model=model_name, device=
             json.dump(tasks, f, indent=2, ensure_ascii=False)
         return filename
 
-    # Бонус: human-in-the-loop
     def export_low_confidence(self, df_labeled: pd.DataFrame, threshold: float = 0.7, text_col: str = 'content') -> str:
-        """
-        Сохраняет примеры с уверенностью ниже threshold в отдельный CSV для ручной разметки.
-        """
         low_conf = df_labeled[df_labeled['confidence'] < threshold].copy()
         if low_conf.empty:
             print("Нет примеров с низкой уверенностью.")

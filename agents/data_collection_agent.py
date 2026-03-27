@@ -1,7 +1,5 @@
 import os
 import pandas as pd
-import requests
-from bs4 import BeautifulSoup
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -46,37 +44,7 @@ class DataCollectionAgent:
         else:
             raise ValueError("source должен быть 'hf' или 'kaggle'")
 
-    def scrape(self, url, selector):
-        if not selector:
-            raise ValueError("Необходимо указать selector")
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'html.parser')
-        elements = soup.select(selector)
-        if not elements:
-            raise ValueError(f"По селектору '{selector}' ничего не найдено")
-        data = [{"text": el.get_text(strip=True), "label": None} for el in elements if el.get_text(strip=True)]
-        df = pd.DataFrame(data)
-        return self._unify(df, f"scrape_{url}", "text", "label")
-
-    def fetch_api(self, endpoint, params=None):
-        params = params or {}
-        response = requests.get(endpoint, params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        if isinstance(data, dict) and "articles" in data:
-            rows = []
-            for art in data["articles"]:
-                text = f"{art.get('title','')} {art.get('description','')}".strip()
-                if text:
-                    rows.append({"text": text, "label": None})
-            df = pd.DataFrame(rows)
-        else:
-            df = pd.json_normalize(data)
-            text_col = df.select_dtypes(include=['object']).columns[0] if not df.empty else "text"
-            return self._unify(df, f"api_{endpoint}", text_col, None)
-        return self._unify(df, f"api_{endpoint}", "text", "label")
-
+    # Методы scrape и fetch_api удалены – они не используются в пайплайне
     def merge(self, sources):
         dfs = []
         for src in sources:
@@ -87,10 +55,6 @@ class DataCollectionAgent:
                     df = self.load_dataset(src["name"], "hf")
                 elif src["type"] == "kaggle_dataset":
                     df = self.load_dataset(src["name"], "kaggle")
-                elif src["type"] == "scrape":
-                    df = self.scrape(src["url"], src["selector"])
-                elif src["type"] == "api":
-                    df = self.fetch_api(src["endpoint"], src.get("params"))
                 else:
                     raise ValueError(f"Неизвестный тип: {src['type']}")
                 dfs.append(df)

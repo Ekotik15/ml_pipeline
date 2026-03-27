@@ -1,6 +1,14 @@
 pandas
 numpy
 scikit-learn
+matplotlib
+jupyter
+prefect
 transformers
 torch
-spacy
+joblib
+pyarrow
+tabulate
+beautifulsoup4
+requests
+scipy
